@@ -1,0 +1,10 @@
+{
+  "name": "kos-filemanager-window",
+  "private": true,
+  "type": "module",
+  "description": "文件管理窗口的浏览器资产：ES 模块原样分发，无构建步骤、无运行时依赖。",
+  "scripts": {
+    "check": "node --check pkg/product/assets/app.js",
+    "test": "node --test tests/acceptance/*/*.test.js"
+  }
+}

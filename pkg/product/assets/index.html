@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>文件管理</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>文件管理</h1>
+      <div class="view-switch" role="group" aria-label="视图">
+        <button type="button" id="view-list" data-view="list" aria-pressed="true">列表</button>
+        <button type="button" id="view-grid" data-view="grid" aria-pressed="false">网格</button>
+      </div>
+      <p class="status" id="status" role="status">正在连接控制台…</p>
+    </header>
+    <nav class="path-bar" aria-label="当前位置">
+      <span class="path-label">位置</span>
+      <span class="path" id="path">卷根</span>
+    </nav>
+    <main class="workspace">
+      <section class="panel" aria-labelledby="volumes-heading">
+        <div class="panel-bar">
+          <h2 id="volumes-heading">授权卷</h2>
+          <span class="count" id="count"></span>
+        </div>
+        <ul class="volumes list" id="volumes"></ul>
+        <p class="empty" id="volumes-empty" hidden>暂无授权卷。</p>
+        <p class="problems" id="problems" hidden></p>
+      </section>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

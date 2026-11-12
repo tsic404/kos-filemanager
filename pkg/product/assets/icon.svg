@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="文件管理">
+  <path d="M8 14a4 4 0 0 1 4-4h14l6 6h20a4 4 0 0 1 4 4v30a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#e8b04b"/>
+  <path d="M8 22h48v28a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#f2c96b"/>
+</svg>
