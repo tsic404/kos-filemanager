@@ -1,7 +1,8 @@
 // File-manager window: the application side of the handshake that delivers the
 // window's application token, the authorized volume list the data plane serves,
-// and the browse and read-only preview of one volume's current content
-// (FILE-C-1, FILE-C-3, DASH-C-27, KOSD-C-75).
+// the browse and read-only preview of one volume's current content, and the
+// uploads and downloads that write and read inside it
+// (FILE-C-1, FILE-C-3, FILE-C-4, DASH-C-27, KOSD-C-75).
 //
 // The token stays in this closure: it is never written to storage, the document
 // or a message. Reads go to this origin's data plane without the console cookie,
@@ -46,6 +47,31 @@ const KIND_LABELS = Object.freeze({
 // KIND_DIRECTORY is the one entry type a click descends into.
 const KIND_DIRECTORY = "directory";
 
+// KIND_FILE is the one entry type the window offers to download.
+const KIND_FILE = "file";
+
+// UPLOAD_CHUNK_BYTES bounds one content request. Sending the file in parts is
+// what keeps the service's progress readable while the transfer runs
+// (FILE-C-4).
+const UPLOAD_CHUNK_BYTES = 512 * 1024;
+
+// TRANSFER_STATE_LABELS render the state the data plane reports for one
+// transfer; an unknown state stays visible instead of reading as success
+// (FILE-C-4).
+const TRANSFER_STATE_LABELS = Object.freeze({
+  opening: "正在打开",
+  open: "上传中",
+  uploading: "上传中",
+  downloading: "下载中",
+  conflict: "等待确认",
+  completed: "已完成",
+  cancelled: "已取消",
+  failed: "失败",
+});
+
+// SETTLED_TRANSFER_STATES are the states a transfer no longer moves out of.
+const SETTLED_TRANSFER_STATES = new Set(["completed", "cancelled", "failed"]);
+
 // TOKEN_CODES are the refusals that end this window: the token is gone and a
 // reopened window is the only way forward (KOSD-C-75).
 const TOKEN_CODES = new Set(["unauthenticated", "token_invalid", "token_foreign_app"]);
@@ -55,13 +81,14 @@ const BYTE_STEP = 1024;
 const BYTE_UNITS = Object.freeze(["B", "KB", "MB", "GB"]);
 
 // createFileManager binds the window to one document, one frame window and one
-// fetch. Every dependency is injected so the handshake, the reads and both
-// views can be exercised without a browser.
+// fetch. Every dependency is injected so the handshake, the reads, both views
+// and the transfers can be exercised without a browser.
 export function createFileManager({
   document: doc,
   window: frame,
   fetch: read = globalThis.fetch,
   setInterval: startInterval = globalThis.setInterval,
+  save: persist = (name, bytes, contentType) => saveDownloadedFile(doc, name, bytes, contentType),
 }) {
   const state = {
     consoleOrigin: "",
@@ -80,6 +107,8 @@ export function createFileManager({
     isTruncated: false,
     hasListing: false,
     preview: null,
+    transfer: null,
+    upload: null,
   };
 
   const elements = {
@@ -105,6 +134,16 @@ export function createFileManager({
     previewImage: doc.getElementById("preview-image"),
     previewCut: doc.getElementById("preview-cut"),
     previewClose: doc.getElementById("preview-close"),
+    upload: doc.getElementById("upload"),
+    uploadFile: doc.getElementById("upload-file"),
+    transferPanel: doc.getElementById("transfer-panel"),
+    transferName: doc.getElementById("transfer-name"),
+    transferState: doc.getElementById("transfer-state"),
+    transferProgress: doc.getElementById("transfer-progress"),
+    transferMeta: doc.getElementById("transfer-meta"),
+    transferConfirm: doc.getElementById("transfer-confirm"),
+    transferCancel: doc.getElementById("transfer-cancel"),
+    transferDismiss: doc.getElementById("transfer-dismiss"),
   };
 
   let alive = 0;
@@ -130,6 +169,20 @@ export function createFileManager({
     elements.root.addEventListener("click", () => void browse(""));
     elements.refresh.addEventListener("click", () => void browse(state.path));
     elements.previewClose.addEventListener("click", clearPreview);
+    elements.upload.addEventListener("click", () => elements.uploadFile.click());
+    elements.uploadFile.addEventListener("change", () => {
+      const files = elements.uploadFile.files;
+      const selected = files && files[0];
+      // The picker is reset so choosing the same file again fires a change;
+      // the selected file is read before the value is cleared.
+      elements.uploadFile.value = "";
+      if (selected) {
+        void uploadFile(selected);
+      }
+    });
+    elements.transferConfirm.addEventListener("click", () => void confirmOverwrite());
+    elements.transferCancel.addEventListener("click", () => void cancelTransfer());
+    elements.transferDismiss.addEventListener("click", dismissTransfer);
     setView(VIEW_LIST);
     renderVolumes();
     renderBrowser();
@@ -367,12 +420,12 @@ export function createFileManager({
     return segments.join("/");
   }
 
-  // browse reads one directory of the open volume. Every browse is a fresh
-  // read, so a deletion, a rename or another window's change shows on the next
-  // one (FILE-C-3).
+  // browse reads one directory of the open volume and reports whether the
+  // listing was replaced. Every browse is a fresh read, so a deletion, a rename
+  // or another window's change shows on the next one (FILE-C-3).
   async function browse(relative) {
     if (state.volume === null) {
-      return;
+      return false;
     }
     setStatus("正在读取目录…");
     let response;
@@ -383,18 +436,18 @@ export function createFileManager({
       });
     } catch {
       setStatus("读取目录失败，请稍后重试", true);
-      return;
+      return false;
     }
     if (!response.ok) {
       showFailure(await failureOf(response), "读取目录失败");
-      return;
+      return false;
     }
     let answer;
     try {
       answer = await response.json();
     } catch {
       setStatus("读取目录失败：应答无法解析", true);
-      return;
+      return false;
     }
     const body = answer && typeof answer === "object" ? answer : {};
     state.path = relative;
@@ -406,6 +459,7 @@ export function createFileManager({
     state.preview = null;
     renderBrowser();
     setStatus("");
+    return true;
   }
 
   function entriesAddress(relative) {
@@ -474,20 +528,27 @@ export function createFileManager({
   }
 
   // failureOf reads the refusal envelope the data plane answers, so the window
-  // shows the service's own reason instead of a bare status code (FILE-C-3).
+  // shows the service's own reason instead of a bare status code (FILE-C-3,
+  // FILE-C-4).
   async function failureOf(response) {
-    let body = null;
-    try {
-      body = await response.json();
-    } catch {
-      body = null;
-    }
+    const body = await bodyOf(response);
     const error = body && typeof body === "object" && body.error && typeof body.error === "object" ? body.error : {};
     return {
       status: response.status,
       code: typeof error.code === "string" ? error.code : "",
       message: typeof error.message === "string" ? error.message : "",
+      transfer: body && typeof body === "object" && body.transfer && typeof body.transfer === "object" ? body.transfer : null,
     };
+  }
+
+  // bodyOf reads one answer, so a caller keeps the status it can report even
+  // when the answer is not JSON.
+  async function bodyOf(response) {
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
   }
 
   // showFailure keeps the reason readable; a lost token is the one refusal that
@@ -498,6 +559,385 @@ export function createFileManager({
       return;
     }
     setStatus(failure.message || failure.code || `${fallback}（${failure.status}）`, true);
+  }
+
+  // uploadFile opens one upload session for the chosen file and runs it to the
+  // end. The session is opened without overwrite first: a same-name file comes
+  // back as a conflict and waits for the reader's confirmation (FILE-C-4).
+  async function uploadFile(file) {
+    if (state.volume === null || !file || typeof file.name !== "string" || file.name === "") {
+      return;
+    }
+    if (state.transfer !== null && !SETTLED_TRANSFER_STATES.has(state.transfer.state)) {
+      setStatus("上一次传输还在进行，先结束再上传", true);
+      return;
+    }
+    const source = { file, path: state.path, route: volumeRoute(state.volume) };
+    state.upload = source;
+    await openUpload(source, false);
+  }
+
+  // openUpload opens one session and, when the target is free, sends the whole
+  // file through it. The content goes in parts, so the service's progress can
+  // be read while the transfer runs (FILE-C-4).
+  async function openUpload(source, overwrite) {
+    const transfer = {
+      direction: "upload",
+      id: "",
+      route: source.route,
+      name: source.file.name,
+      path: source.path,
+      state: "opening",
+      size: source.file.size,
+      received: 0,
+      reason: "",
+      conflict: null,
+      isCancelled: false,
+    };
+    state.transfer = transfer;
+    renderTransfer();
+    setStatus(`正在打开上传会话：${transfer.name}`);
+    let response;
+    try {
+      response = await read(source.route + "/transfers", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${state.token}`,
+          "Content-Type": "application/json",
+        },
+        credentials: "omit",
+        body: JSON.stringify({ path: source.path, name: transfer.name, size: source.file.size, overwrite }),
+      });
+    } catch {
+      refuseTransfer(transfer, { status: 0, code: "", message: "上传失败：无法连接数据面" }, "打开上传会话");
+      return;
+    }
+    if (!response.ok) {
+      refuseTransfer(transfer, await failureOf(response), "打开上传会话");
+      return;
+    }
+    adoptTransfer(transfer, await bodyOf(response));
+    if (transfer.state === "conflict") {
+      // Nothing has been sent and the target is untouched until the reader
+      // confirms the replacement (FILE-C-4).
+      setStatus(`目标已有同名文件，确认后才替换：${transfer.name}`, true);
+      return;
+    }
+    if (transfer.state === "completed") {
+      await refreshListing(transfer, `上传完成：${transfer.name}，共 ${byteLabel(transfer.size)}`);
+      return;
+    }
+    await sendContent(transfer, source);
+  }
+
+  // sendContent sends the source in parts: every answer carries how much the
+  // service holds, and the progress read between parts is the service's own
+  // count rather than the window's guess (FILE-C-4).
+  async function sendContent(transfer, source) {
+    transfer.state = "uploading";
+    renderTransfer();
+    setStatus(`正在上传：${transfer.name}`);
+    for (let offset = 0; offset < source.file.size; offset += UPLOAD_CHUNK_BYTES) {
+      if (transfer.isCancelled) {
+        return;
+      }
+      const end = Math.min(offset + UPLOAD_CHUNK_BYTES, source.file.size);
+      const chunk = await source.file.slice(offset, end).arrayBuffer();
+      const answered = await putContent(transfer, chunk);
+      if (!answered || transfer.isCancelled) {
+        return;
+      }
+      if (transfer.state === "completed") {
+        await refreshListing(transfer, `上传完成：${transfer.name}，共 ${byteLabel(transfer.received)}`);
+        return;
+      }
+      await readProgress(transfer);
+    }
+    // Every byte was sent but the service did not report the file whole, so the
+    // target is not claimed as written (FILE-C-4).
+    refuseTransfer(transfer, { status: 0, code: "", message: "上传未完成：数据面没有确认收全" }, "上传");
+  }
+
+  // putContent appends one part and reports whether the session still moves. A
+  // same-name file that appeared during the transfer turns the session into a
+  // conflict that waits for confirmation (FILE-C-4).
+  async function putContent(transfer, chunk) {
+    let response;
+    try {
+      response = await read(transfer.route + "/transfers/" + encodeURIComponent(transfer.id) + "/content", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${state.token}`,
+          "Content-Type": "application/octet-stream",
+        },
+        credentials: "omit",
+        body: chunk,
+      });
+    } catch {
+      if (!transfer.isCancelled) {
+        refuseTransfer(transfer, { status: 0, code: "", message: "上传中断：无法连接数据面" }, "上传");
+      }
+      return false;
+    }
+    if (transfer.isCancelled) {
+      return false;
+    }
+    if (!response.ok) {
+      const failure = await failureOf(response);
+      if (failure.code === "upload_conflict") {
+        adoptTransfer(transfer, failure.transfer);
+        // The service dropped the staged bytes with the refusal, so the resend
+        // the confirmation leads to starts from zero.
+        transfer.received = 0;
+        renderTransfer();
+        setStatus(failure.message, true);
+        return false;
+      }
+      refuseTransfer(transfer, failure, "上传");
+      return false;
+    }
+    adoptTransfer(transfer, await bodyOf(response));
+    return true;
+  }
+
+  // readProgress reads between parts, so the numbers on screen come from the
+  // service that holds the bytes (FILE-C-4).
+  async function readProgress(transfer) {
+    let response;
+    try {
+      response = await read(transfer.route + "/transfers/" + encodeURIComponent(transfer.id), {
+        headers: { Authorization: `Bearer ${state.token}` },
+        credentials: "omit",
+      });
+    } catch {
+      return;
+    }
+    if (!response.ok) {
+      return;
+    }
+    adoptTransfer(transfer, await bodyOf(response));
+  }
+
+  // adoptTransfer copies one session answer onto the surface. Absent fields
+  // keep their last value, so a progress read never erases the declared size.
+  function adoptTransfer(transfer, answer) {
+    if (!answer || typeof answer !== "object") {
+      return;
+    }
+    if (typeof answer.id === "string") {
+      transfer.id = answer.id;
+    }
+    if (typeof answer.state === "string") {
+      transfer.state = answer.state;
+    }
+    if (typeof answer.size === "number") {
+      transfer.size = answer.size;
+    }
+    if (typeof answer.received === "number") {
+      transfer.received = answer.received;
+    }
+    if (typeof answer.reason === "string" && answer.reason !== "") {
+      transfer.reason = answer.reason;
+    }
+    if (answer.conflict && typeof answer.conflict === "object") {
+      transfer.conflict = {
+        size: typeof answer.conflict.size === "number" ? answer.conflict.size : 0,
+        modifiedAt: typeof answer.conflict.modifiedAt === "string" ? answer.conflict.modifiedAt : "",
+      };
+    }
+    renderTransfer();
+  }
+
+  // refuseTransfer ends one transfer with the service's own reason readable; a
+  // lost token is the one refusal that ends this window (FILE-C-4, KOSD-C-75).
+  function refuseTransfer(transfer, failure, fallback) {
+    const reason = failure.message || failure.code || `${fallback}（${failure.status}）`;
+    transfer.state = "failed";
+    transfer.reason = reason;
+    renderTransfer();
+    if (TOKEN_CODES.has(failure.code)) {
+      setStatus("窗口令牌已失效，请重新打开窗口", true);
+      return;
+    }
+    setStatus(reason, true);
+  }
+
+  // confirmOverwrite re-opens the session with the reader's confirmation, which
+  // is what lets the service replace the same-name file (FILE-C-4).
+  async function confirmOverwrite() {
+    const transfer = state.transfer;
+    const source = state.upload;
+    if (transfer === null || transfer.state !== "conflict" || source === null) {
+      return;
+    }
+    await openUpload(source, true);
+  }
+
+  // cancelTransfer stops the running upload with DELETE: the service removes
+  // the staged bytes and leaves the target as it was (FILE-C-4).
+  async function cancelTransfer() {
+    const transfer = state.transfer;
+    if (transfer === null || transfer.direction !== "upload" || SETTLED_TRANSFER_STATES.has(transfer.state)) {
+      return;
+    }
+    transfer.isCancelled = true;
+    if (transfer.id === "") {
+      transfer.state = "cancelled";
+      renderTransfer();
+      setStatus(`已取消上传：${transfer.name}`);
+      return;
+    }
+    setStatus(`正在取消上传：${transfer.name}`);
+    let response;
+    try {
+      response = await read(transfer.route + "/transfers/" + encodeURIComponent(transfer.id), {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${state.token}` },
+        credentials: "omit",
+      });
+    } catch {
+      refuseTransfer(transfer, { status: 0, code: "", message: "取消失败：无法连接数据面" }, "取消上传");
+      return;
+    }
+    if (!response.ok) {
+      refuseTransfer(transfer, await failureOf(response), "取消上传");
+      return;
+    }
+    adoptTransfer(transfer, await bodyOf(response));
+    await refreshListing(transfer, `已取消上传：${transfer.name}，目标位置未改变`);
+  }
+
+  function dismissTransfer() {
+    state.transfer = null;
+    state.upload = null;
+    renderTransfer();
+  }
+
+  // refreshListing reads the directory again after a transfer settled, so the
+  // surface shows what is there rather than what the transfer claimed
+  // (FILE-C-4).
+  async function refreshListing(transfer, message) {
+    const isBrowsing =
+      state.volume !== null && volumeRoute(state.volume) === transfer.route && state.path === transfer.path;
+    if (!isBrowsing) {
+      setStatus(message);
+      return;
+    }
+    if (await browse(state.path)) {
+      setStatus(message);
+    }
+  }
+
+  // downloadEntry streams one file so the window can show how much of the
+  // declared size has arrived, then hands the whole body to the reader's disk
+  // (FILE-C-4).
+  async function downloadEntry(entry) {
+    if (state.volume === null) {
+      return;
+    }
+    const relative = joinPath(state.path, entry.name);
+    const transfer = {
+      direction: "download",
+      id: "",
+      route: volumeRoute(state.volume),
+      name: entry.name,
+      path: state.path,
+      state: "downloading",
+      size: typeof entry.size === "number" ? entry.size : 0,
+      received: 0,
+      reason: "",
+      conflict: null,
+      isCancelled: false,
+    };
+    state.transfer = transfer;
+    renderTransfer();
+    setStatus(`正在下载：${transfer.name}`);
+    let response;
+    try {
+      response = await read(transfer.route + "/download?path=" + encodeURIComponent(relative), {
+        headers: { Authorization: `Bearer ${state.token}` },
+        credentials: "omit",
+      });
+    } catch {
+      refuseTransfer(transfer, { status: 0, code: "", message: "下载失败：无法连接数据面" }, "下载");
+      return;
+    }
+    if (!response.ok) {
+      refuseTransfer(transfer, await failureOf(response), "下载");
+      return;
+    }
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared >= 0) {
+      transfer.size = declared;
+    }
+    renderTransfer();
+    const reader = response.body.getReader();
+    const parts = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      parts.push(value);
+      transfer.received += value.byteLength;
+      renderTransfer();
+    }
+    if (transfer.size === 0) {
+      transfer.size = transfer.received;
+    }
+    if (transfer.received !== transfer.size) {
+      refuseTransfer(
+        transfer,
+        { status: 0, code: "", message: `下载中断：收到 ${byteLabel(transfer.received)}，共 ${byteLabel(transfer.size)}` },
+        "下载",
+      );
+      return;
+    }
+    transfer.state = "completed";
+    renderTransfer();
+    persist(transfer.name, joinChunks(parts), response.headers.get("content-type") || "");
+    setStatus(`下载完成：${transfer.name}，共 ${byteLabel(transfer.received)}`);
+  }
+
+  // renderTransfer lays out the running transfer: what is moving, the state the
+  // service reports, how much of the declared size arrived, and the actions
+  // that apply to that state (FILE-C-4).
+  function renderTransfer() {
+    const transfer = state.transfer;
+    elements.transferPanel.hidden = transfer === null;
+    if (transfer === null) {
+      elements.transferName.textContent = "";
+      elements.transferState.textContent = "";
+      elements.transferMeta.textContent = "";
+      elements.transferProgress.max = 1;
+      elements.transferProgress.value = 0;
+      elements.transferConfirm.hidden = true;
+      elements.transferCancel.hidden = true;
+      elements.transferDismiss.hidden = true;
+      return;
+    }
+    elements.transferState.textContent = TRANSFER_STATE_LABELS[transfer.state] || "进行中";
+    elements.transferName.textContent = `${transfer.direction === "upload" ? "上传" : "下载"} ${transfer.name}`;
+    const hasTotal = transfer.size > 0;
+    elements.transferProgress.max = hasTotal ? transfer.size : 1;
+    elements.transferProgress.value = hasTotal ? Math.min(transfer.received, transfer.size) : 0;
+    const parts = [];
+    if (hasTotal) {
+      parts.push(`${percentLabel(transfer.received, transfer.size)}%（${byteLabel(transfer.received)} / ${byteLabel(transfer.size)}）`);
+    } else {
+      parts.push(byteLabel(transfer.received));
+    }
+    if (transfer.conflict !== null) {
+      parts.push(`已有同名文件 ${byteLabel(transfer.conflict.size)} · ${instantLabel(transfer.conflict.modifiedAt)}`);
+    }
+    if (transfer.reason !== "") {
+      parts.push(transfer.reason);
+    }
+    elements.transferMeta.textContent = parts.join(" · ");
+    elements.transferConfirm.hidden = transfer.state !== "conflict";
+    elements.transferCancel.hidden =
+      transfer.direction !== "upload" || SETTLED_TRANSFER_STATES.has(transfer.state) || transfer.state === "opening";
+    elements.transferDismiss.hidden = !SETTLED_TRANSFER_STATES.has(transfer.state);
   }
 
   // leaveVolume returns to the volume list and drops the directory, the listing
@@ -511,18 +951,22 @@ export function createFileManager({
     state.isTruncated = false;
     state.hasListing = false;
     state.preview = null;
+    state.transfer = null;
+    state.upload = null;
     renderBrowser();
     setStatus(`${state.volumes.length} 个授权卷`);
   }
 
   // renderBrowser lays out the open volume: the location, the entries the data
-  // plane served in name order, what the bound left out, and the preview.
+  // plane served in name order, what the bound left out, the preview, and the
+  // transfer that is running for it.
   function renderBrowser() {
     const isOpen = state.volume !== null;
     elements.browser.hidden = !isOpen;
     elements.back.hidden = !isOpen;
     elements.root.hidden = !isOpen;
     elements.refresh.hidden = !isOpen;
+    elements.upload.hidden = !isOpen;
     renderPath();
     elements.entries.replaceChildren();
     for (const entry of state.entries) {
@@ -544,6 +988,7 @@ export function createFileManager({
       ? `已截断：显示前 ${state.limit} 项，共 ${state.total} 项`
       : "";
     renderPreview();
+    renderTransfer();
   }
 
   function entryNode(entry) {
@@ -572,6 +1017,18 @@ export function createFileManager({
     modified.textContent = instantLabel(entry.modifiedAt);
 
     item.append(open, kind, size, modified);
+
+    // Only a regular file can be downloaded: the data plane refuses anything
+    // else with its reason (FILE-C-4).
+    if (entry.kind === KIND_FILE) {
+      const download = doc.createElement("button");
+      download.type = "button";
+      download.className = "entry-download";
+      download.textContent = "下载";
+      download.dataset.entry = entry.name;
+      download.addEventListener("click", () => void downloadEntry(entry));
+      item.append(download);
+    }
     return item;
   }
 
@@ -640,6 +1097,39 @@ function isEntry(entry) {
 // joinPath appends one entry name to a relative directory path.
 function joinPath(base, name) {
   return base === "" ? name : base + "/" + name;
+}
+
+// percentLabel reads how much of one declared total has arrived, capped so a
+// report the window cannot explain never reads above the whole.
+function percentLabel(received, total) {
+  if (total <= 0) {
+    return "100";
+  }
+  return String(Math.min(100, Math.floor((received / total) * 100)));
+}
+
+// joinChunks copies the received parts into one buffer for the reader's disk.
+function joinChunks(parts) {
+  const size = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return joined;
+}
+
+// saveDownloadedFile hands one finished download to the browser's own save
+// path through an object address on an anchor the document does not show.
+function saveDownloadedFile(doc, name, bytes, contentType) {
+  const address = URL.createObjectURL(new Blob([bytes], { type: contentType || "application/octet-stream" }));
+  const link = doc.createElement("a");
+  link.href = address;
+  link.download = name;
+  link.click();
+  // The address stays valid until the browser has started the save.
+  setTimeout(() => URL.revokeObjectURL(address), 60 * 1000);
 }
 
 // byteLabel renders one entry size with its unit; a size the answer did not

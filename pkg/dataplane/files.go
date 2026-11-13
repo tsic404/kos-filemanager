@@ -283,6 +283,10 @@ func (s *Service) handleListing(w http.ResponseWriter, r *http.Request) {
 		(&refusal{http.StatusBadRequest, CodePathInvalid, "路径无效：不能是绝对路径或包含上级目录"}).write(w)
 		return
 	}
+	if reservedPath(relative) {
+		(&refusal{http.StatusForbidden, CodePathReserved, "路径 " + relative + " 是传输暂存区，不能浏览"}).write(w)
+		return
+	}
 	opened, rejected := s.openVolumeRoot(r.Context(), binding, namespace, name)
 	if rejected != nil {
 		rejected.write(w)
@@ -319,6 +323,10 @@ func (s *Service) handleListing(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := make([]Entry, 0, len(read))
 	for _, candidate := range read {
+		if relative == "" && candidate.IsDir() && candidate.Name() == StagingDir {
+			// The staging area holds in-flight uploads, not volume content.
+			continue
+		}
 		info, err := candidate.Info()
 		if err != nil {
 			// An entry that disappeared between the read and the stat is not
@@ -362,6 +370,10 @@ func (s *Service) handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if relative == "" {
 		(&refusal{http.StatusBadRequest, CodePathInvalid, "卷根是目录，不能预览"}).write(w)
+		return
+	}
+	if reservedPath(relative) {
+		(&refusal{http.StatusForbidden, CodePathReserved, "路径 " + relative + " 是传输暂存区，不能预览"}).write(w)
 		return
 	}
 	opened, rejected := s.openVolumeRoot(r.Context(), binding, namespace, name)

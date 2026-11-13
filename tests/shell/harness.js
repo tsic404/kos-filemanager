@@ -40,6 +40,16 @@ export function windowDocument() {
     "preview-image",
     "preview-cut",
     "preview-close",
+    "upload",
+    "upload-file",
+    "transfer-panel",
+    "transfer-name",
+    "transfer-state",
+    "transfer-progress",
+    "transfer-meta",
+    "transfer-confirm",
+    "transfer-cancel",
+    "transfer-dismiss",
   ];
   const elements = {};
   for (const id of ids) elements[id] = fakeElement(id);
@@ -107,8 +117,13 @@ export function fakeElement(tag) {
       handlers.push(handler);
       element.listeners.set(name, handlers);
     },
+    // dispatch delivers one event to the handlers the view registered, which
+    // is how a case drives a control whose browser gesture it cannot perform.
+    dispatch(name, event = {}) {
+      for (const handler of element.listeners.get(name) || []) handler({ target: element, ...event });
+    },
     click() {
-      for (const handler of element.listeners.get("click") || []) handler({ target: element });
+      element.dispatch("click");
     },
   };
   Object.defineProperty(element, "textContent", {
@@ -171,7 +186,10 @@ export function reply(status, body) {
   };
 }
 
-// fakeFetch answers by "METHOD URL" and records what the window sent.
+// fakeFetch answers by "METHOD URL" and records what the window sent. A route
+// is either the {status, body} a reply is built from, a ready response (as
+// streamReply returns), or a function of the recorded call for answers that
+// differ per request.
 export function fakeFetch(routes) {
   const calls = [];
   const fetch = async (url, init = {}) => {
@@ -180,15 +198,56 @@ export function fakeFetch(routes) {
       url,
       headers: init.headers || {},
       credentials: init.credentials,
+      body: init.body,
     };
     calls.push(call);
-    const route = routes[`${call.method} ${url}`];
+    let route = routes[`${call.method} ${url}`];
+    if (typeof route === "function") route = await route(call);
     if (!route) {
       return reply(404, { error: { code: "not_found", message: "missing", stage: "read" } });
     }
+    if (typeof route.ok === "boolean") return route;
     return reply(route.status, route.body);
   };
   return { fetch, calls };
+}
+
+// deferred hands a promise to the case and its resolution to the case too, so
+// an answer can be held while the window is mid-transfer.
+export function deferred() {
+  let resolve;
+  const promise = new Promise((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+// streamReply answers with a body the window reads chunk by chunk, declaring
+// the whole size the way the download route does. gates[i] holds chunk i back
+// until the case resolves it, so progress can be observed mid-transfer.
+export function streamReply(status, { total, chunks, gates = [], headers = {} }) {
+  const entries = new Map(
+    Object.entries({ "content-type": "application/octet-stream", ...headers }).map(([name, value]) => [
+      name.toLowerCase(),
+      String(value),
+    ]),
+  );
+  entries.set("content-length", String(total));
+  const body = new ReadableStream({
+    async start(controller) {
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (gates[index]) await gates[index];
+        controller.enqueue(chunks[index]);
+      }
+      controller.close();
+    },
+  });
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => (entries.has(String(name).toLowerCase()) ? entries.get(String(name).toLowerCase()) : null) },
+    body,
+  };
 }
 
 // fakeIntervals is the timer the liveness report runs on: nothing fires until a

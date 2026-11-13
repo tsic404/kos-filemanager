@@ -8,11 +8,13 @@ package fixtures
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,7 +409,31 @@ func (c *Case) DataPlane(t *testing.T, method, path string, headers map[string]s
 // carry, such as a download disposition.
 func (c *Case) DataPlaneResponse(t *testing.T, method, path string, headers map[string]string) (int, http.Header, map[string]any) {
 	t.Helper()
-	request, err := http.NewRequest(method, c.server.URL+path, nil)
+	status, answerHeaders, content := c.DataPlaneRaw(t, method, path, headers, "")
+	body := map[string]any{}
+	if err := json.Unmarshal(content, &body); err != nil {
+		t.Fatalf("decode the data-plane answer of %s %s: %v", method, path, err)
+	}
+	return status, answerHeaders, body
+}
+
+// DataPlaneSend calls the product's data plane with a request body and reports
+// the answer decoded, which is what an upload session sends and receives.
+func (c *Case) DataPlaneSend(t *testing.T, method, path string, headers map[string]string, body string) (int, map[string]any) {
+	t.Helper()
+	status, _, content := c.DataPlaneRaw(t, method, path, headers, body)
+	answer := map[string]any{}
+	if err := json.Unmarshal(content, &answer); err != nil {
+		t.Fatalf("decode the data-plane answer of %s %s: %v", method, path, err)
+	}
+	return status, answer
+}
+
+// DataPlaneRaw calls the product's data plane and reports the answer's status,
+// headers and bytes, so a case can compare a streamed download with its file.
+func (c *Case) DataPlaneRaw(t *testing.T, method, path string, headers map[string]string, body string) (int, http.Header, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(method, c.server.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("build the data-plane request: %v", err)
 	}
@@ -419,11 +445,11 @@ func (c *Case) DataPlaneResponse(t *testing.T, method, path string, headers map[
 		t.Fatalf("call the data plane: %v", err)
 	}
 	defer response.Body.Close()
-	body := map[string]any{}
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		t.Fatalf("decode the data-plane answer of %s %s: %v", method, path, err)
+	content, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the data-plane answer of %s %s: %v", method, path, err)
 	}
-	return response.StatusCode, response.Header, body
+	return response.StatusCode, response.Header, content
 }
 
 // Bearer is the credential header a window's application token travels in.
