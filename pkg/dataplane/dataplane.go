@@ -1,12 +1,13 @@
 // Package dataplane is the file manager's own service (NG10): it lists the
-// volumes a window's account may open and reports the status each volume's
-// projection carries (FILE-C-1, FILE-C-2).
+// volumes a window's account may open, reports the status each volume's
+// projection carries (FILE-C-1, FILE-C-2), and serves browsing and preview
+// inside those volumes (FILE-C-3).
 //
 // Every request is authorized by the window instance's application token
 // (KOSD-C-75); the console session cookie is never read, so it cannot act as
 // an identity here. The service keeps no index and re-reads its facts on every
-// request, so a volume that recovers is usable on the next browse without
-// reopening the window.
+// request, so a volume that recovers — or a directory another window changed —
+// is current on the next browse without reopening the window.
 package dataplane
 
 import (
@@ -97,6 +98,9 @@ type Config struct {
 	Volumes VolumeSource
 	// Preferences reads the account's preferences; nil serves the defaults.
 	Preferences PreferenceSource
+	// Roots locates the directory served for one volume; nil serves no files,
+	// so every browse answers the reason instead of an empty directory.
+	Roots VolumeRoots
 	// Log records a failure the caller must not learn about; nil discards it.
 	Log *slog.Logger
 	// Now supplies the response clock; defaults to time.Now.
@@ -108,6 +112,7 @@ type Service struct {
 	tokens      Authenticator
 	volumes     VolumeSource
 	preferences PreferenceSource
+	roots       VolumeRoots
 	log         *slog.Logger
 	now         func() time.Time
 }
@@ -124,6 +129,7 @@ func New(config Config) (*Service, error) {
 		tokens:      config.Tokens,
 		volumes:     config.Volumes,
 		preferences: config.Preferences,
+		roots:       config.Roots,
 		log:         config.Log,
 		now:         config.Now,
 	}
@@ -156,6 +162,8 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET "+product.HealthPath, s.handleHealth)
 	mux.Handle("GET /files/window", s.authorize(http.HandlerFunc(s.handleWindow)))
 	mux.Handle("GET /files/volumes/{namespace}/{name}", s.authorize(http.HandlerFunc(s.handleVolume)))
+	mux.Handle("GET /files/volumes/{namespace}/{name}/entries", s.authorize(http.HandlerFunc(s.handleListing)))
+	mux.Handle("GET /files/volumes/{namespace}/{name}/preview", s.authorize(http.HandlerFunc(s.handlePreview)))
 	return mux
 }
 
@@ -244,21 +252,9 @@ func (s *Service) handleWindow(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleVolume(w http.ResponseWriter, r *http.Request) {
 	binding := bindingOf(r.Context())
 	namespace, name := r.PathValue("namespace"), r.PathValue("name")
-	observed, found, err := s.volumes.Get(r.Context(), namespace, name)
-	if err != nil {
-		s.log.Warn("read the volume", "volume", namespace+"/"+name, "error", err)
-		writeFailure(w, http.StatusServiceUnavailable, CodeVolumesUnreadable,
-			"读取卷失败，请稍后重试")
-		return
-	}
-	if !found {
-		writeFailure(w, http.StatusNotFound, CodeVolumeNotFound, "卷 "+namespace+"/"+name+" 不存在")
-		return
-	}
-	listed, authorized := s.describe(observed, binding.Account, s.now())
-	if !authorized {
-		writeFailure(w, http.StatusForbidden, CodeVolumeUnauthorized,
-			"卷 "+namespace+"/"+name+" 不在本账号的授权范围")
+	listed, rejected := s.readVolume(r.Context(), binding, namespace, name)
+	if rejected != nil {
+		rejected.write(w)
 		return
 	}
 	if !listed.CanBrowse {

@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -62,6 +64,9 @@ type Case struct {
 	Artifacts extension.MemoryArtifacts
 	// Installation is the install pass that loaded this product.
 	Installation *extension.Installation
+	// Files is the base directory the data plane serves volume directories
+	// from; cases write the volume's files below it (FILE-C-3).
+	Files string
 	// Now is the clock the control plane and the data plane share.
 	Now func() time.Time
 
@@ -117,10 +122,12 @@ func Start(t *testing.T) *Case {
 	now := accounts.Clock.Now
 	host := apphost.New(apphost.Config{Now: now})
 	applications := LoadRegistry(t, installed)
+	files := t.TempDir()
 	service, err := dataplane.New(dataplane.Config{
 		Tokens:      dataplane.AppHost{Host: host},
 		Volumes:     dataplane.ClusterVolumes{Dynamic: cluster.Dynamic, Now: now},
 		Preferences: dataplane.IdentityPreferences{Service: accounts.Service},
+		Roots:       dataplane.DirectoryRoots{Base: files},
 		Now:         now,
 	})
 	if err != nil {
@@ -136,6 +143,7 @@ func Start(t *testing.T) *Case {
 		OwnerToken:   owner,
 		Artifacts:    artifacts,
 		Installation: installed,
+		Files:        files,
 		Now:          now,
 		host:         host,
 		registry:     applications,
@@ -305,6 +313,18 @@ func (c *Case) SetVolumeStatus(t *testing.T, name, phase, node string) {
 	}
 }
 
+// VolumeDir returns the directory this host serves for one volume, creating it
+// on first use (FILE-C-3). A case writes and removes files there, so the data
+// plane reads the same directory a mounted volume would present.
+func (c *Case) VolumeDir(t *testing.T, namespace, name string) string {
+	t.Helper()
+	directory := filepath.Join(c.Files, namespace, name)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("create the directory of volume %s/%s: %v", namespace, name, err)
+	}
+	return directory
+}
+
 // TransferVolume moves a volume to another owner through the control plane, as
 // the global Owner does (KOSD-C-60).
 func (c *Case) TransferVolume(t *testing.T, ownerToken, name, to string) {
@@ -378,6 +398,15 @@ func (c *Case) CloseWindow(t *testing.T, account string, window Window) {
 // DataPlane calls the product's data plane with explicit headers.
 func (c *Case) DataPlane(t *testing.T, method, path string, headers map[string]string) (int, map[string]any) {
 	t.Helper()
+	status, _, body := c.DataPlaneResponse(t, method, path, headers)
+	return status, body
+}
+
+// DataPlaneResponse calls the product's data plane and reports the answer's
+// headers beside its decoded body, so a case can assert what a refusal must not
+// carry, such as a download disposition.
+func (c *Case) DataPlaneResponse(t *testing.T, method, path string, headers map[string]string) (int, http.Header, map[string]any) {
+	t.Helper()
 	request, err := http.NewRequest(method, c.server.URL+path, nil)
 	if err != nil {
 		t.Fatalf("build the data-plane request: %v", err)
@@ -394,7 +423,7 @@ func (c *Case) DataPlane(t *testing.T, method, path string, headers map[string]s
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatalf("decode the data-plane answer of %s %s: %v", method, path, err)
 	}
-	return response.StatusCode, body
+	return response.StatusCode, response.Header, body
 }
 
 // Bearer is the credential header a window's application token travels in.

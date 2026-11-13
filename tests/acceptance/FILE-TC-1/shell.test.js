@@ -9,12 +9,11 @@ import test from "node:test";
 
 import { createFileManager } from "../../../pkg/product/assets/app.js";
 import {
-  fakeDocument,
-  fakeElement,
   fakeFetch,
   fakeIntervals,
   fakeWindow,
   settle,
+  windowDocument,
 } from "../../shell/harness.js";
 
 const consoleOrigin = "https://console.example.test";
@@ -43,16 +42,7 @@ const aliceData = {
 
 // start mounts the window against one data-plane answer.
 function start(answer) {
-  const document = fakeDocument({
-    status: fakeElement("p"),
-    path: fakeElement("span"),
-    volumes: fakeElement("ul"),
-    "volumes-empty": fakeElement("p"),
-    count: fakeElement("span"),
-    problems: fakeElement("p"),
-    "view-list": fakeElement("button"),
-    "view-grid": fakeElement("button"),
-  });
+  const document = windowDocument();
   const window = fakeWindow(frameAddress("kos-console=" + encodeURIComponent(consoleOrigin) + "&kos-window=w-1"));
   const network = fakeFetch({
     "GET /files/window": { status: 200, body: answer },

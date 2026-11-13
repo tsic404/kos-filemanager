@@ -20,17 +20,49 @@
     <nav class="path-bar" aria-label="当前位置">
       <span class="path-label">位置</span>
       <span class="path" id="path">卷根</span>
+      <span class="path-actions">
+        <button type="button" class="action" id="root" hidden>返回卷根</button>
+        <button type="button" class="action" id="back" hidden>返回卷列表</button>
+      </span>
     </nav>
     <main class="workspace">
       <section class="panel" aria-labelledby="volumes-heading">
         <div class="panel-bar">
           <h2 id="volumes-heading">授权卷</h2>
-          <span class="count" id="count"></span>
+          <div class="panel-tools">
+            <span class="count" id="count"></span>
+          </div>
         </div>
         <ul class="volumes list" id="volumes"></ul>
         <p class="empty" id="volumes-empty" hidden>暂无授权卷。</p>
         <p class="problems" id="problems" hidden></p>
       </section>
+      <div class="column">
+        <section class="panel" id="browser-panel" aria-labelledby="browser-heading" hidden>
+          <div class="panel-bar">
+            <h2 id="browser-heading">目录</h2>
+            <div class="panel-tools">
+              <span class="count" id="entries-count"></span>
+              <button type="button" class="action" id="refresh" hidden>刷新</button>
+            </div>
+          </div>
+          <p class="truncated" id="truncated" hidden></p>
+          <ul class="entries list" id="entries"></ul>
+          <p class="empty" id="entries-empty" hidden>此目录为空。</p>
+        </section>
+        <section class="panel" id="preview-panel" aria-labelledby="preview-heading" hidden>
+          <div class="panel-bar">
+            <h2 id="preview-heading">预览</h2>
+            <div class="panel-tools">
+              <span class="count" id="preview-meta"></span>
+              <button type="button" class="action" id="preview-close">关闭</button>
+            </div>
+          </div>
+          <pre class="preview-text" id="preview-text" hidden></pre>
+          <img class="preview-image" id="preview-image" alt="" hidden />
+          <p class="truncated" id="preview-cut" hidden>预览已截断。</p>
+        </section>
+      </div>
     </main>
     <script type="module" src="app.js"></script>
   </body>
