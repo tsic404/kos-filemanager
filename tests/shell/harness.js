@@ -50,6 +50,23 @@ export function windowDocument() {
     "transfer-confirm",
     "transfer-cancel",
     "transfer-dismiss",
+    "delete-current",
+    "change-panel",
+    "change-target",
+    "change-reason",
+    "rename-form",
+    "rename-name",
+    "rename-submit",
+    "transfer-form",
+    "transfer-volume",
+    "transfer-path",
+    "transfer-submit",
+    "delete-confirm",
+    "delete-counts",
+    "delete-entries",
+    "delete-truncated",
+    "delete-submit",
+    "change-cancel",
   ];
   const elements = {};
   for (const id of ids) elements[id] = fakeElement(id);

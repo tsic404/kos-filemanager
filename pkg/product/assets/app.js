@@ -1,8 +1,9 @@
 // File-manager window: the application side of the handshake that delivers the
 // window's application token, the authorized volume list the data plane serves,
 // the browse and read-only preview of one volume's current content, and the
-// uploads and downloads that write and read inside it
-// (FILE-C-1, FILE-C-3, FILE-C-4, DASH-C-27, KOSD-C-75).
+// uploads and downloads that write and read inside it, and the rename, copy,
+// move and delete that change surface
+// (FILE-C-1, FILE-C-3, FILE-C-4, FILE-C-5, DASH-C-27, KOSD-C-75).
 //
 // The token stays in this closure: it is never written to storage, the document
 // or a message. Reads go to this origin's data plane without the console cookie,
@@ -72,6 +73,19 @@ const TRANSFER_STATE_LABELS = Object.freeze({
 // SETTLED_TRANSFER_STATES are the states a transfer no longer moves out of.
 const SETTLED_TRANSFER_STATES = new Set(["completed", "cancelled", "failed"]);
 
+// CHANGE_LABELS name the four changes on the entry that carries them
+// (FILE-C-5).
+const CHANGE_LABELS = Object.freeze({
+  rename: "重命名",
+  copy: "复制",
+  move: "移动",
+  delete: "删除",
+});
+
+// CHANGE_TRANSFERS are the two operations that write to a target volume and
+// path, so their form asks for both (FILE-C-5).
+const CHANGE_TRANSFERS = new Set(["copy", "move"]);
+
 // TOKEN_CODES are the refusals that end this window: the token is gone and a
 // reopened window is the only way forward (KOSD-C-75).
 const TOKEN_CODES = new Set(["unauthenticated", "token_invalid", "token_foreign_app"]);
@@ -109,6 +123,8 @@ export function createFileManager({
     preview: null,
     transfer: null,
     upload: null,
+    change: null,
+    confirmation: null,
   };
 
   const elements = {
@@ -144,6 +160,23 @@ export function createFileManager({
     transferConfirm: doc.getElementById("transfer-confirm"),
     transferCancel: doc.getElementById("transfer-cancel"),
     transferDismiss: doc.getElementById("transfer-dismiss"),
+    deleteCurrent: doc.getElementById("delete-current"),
+    changePanel: doc.getElementById("change-panel"),
+    changeTarget: doc.getElementById("change-target"),
+    changeReason: doc.getElementById("change-reason"),
+    changeCancel: doc.getElementById("change-cancel"),
+    renameForm: doc.getElementById("rename-form"),
+    renameName: doc.getElementById("rename-name"),
+    renameSubmit: doc.getElementById("rename-submit"),
+    transferForm: doc.getElementById("transfer-form"),
+    transferVolume: doc.getElementById("transfer-volume"),
+    transferPath: doc.getElementById("transfer-path"),
+    transferSubmit: doc.getElementById("transfer-submit"),
+    deleteConfirm: doc.getElementById("delete-confirm"),
+    deleteCounts: doc.getElementById("delete-counts"),
+    deleteEntries: doc.getElementById("delete-entries"),
+    deleteTruncated: doc.getElementById("delete-truncated"),
+    deleteSubmit: doc.getElementById("delete-submit"),
   };
 
   let alive = 0;
@@ -183,6 +216,11 @@ export function createFileManager({
     elements.transferConfirm.addEventListener("click", () => void confirmOverwrite());
     elements.transferCancel.addEventListener("click", () => void cancelTransfer());
     elements.transferDismiss.addEventListener("click", dismissTransfer);
+    elements.deleteCurrent.addEventListener("click", () => openChange("delete", state.path, state.path, true));
+    elements.renameSubmit.addEventListener("click", () => void submitRename());
+    elements.transferSubmit.addEventListener("click", () => void submitTransfer());
+    elements.deleteSubmit.addEventListener("click", () => void submitDelete());
+    elements.changeCancel.addEventListener("click", closeChange);
     setView(VIEW_LIST);
     renderVolumes();
     renderBrowser();
@@ -420,9 +458,10 @@ export function createFileManager({
     return segments.join("/");
   }
 
-  // browse reads one directory of the open volume and reports whether the
-  // listing was replaced. Every browse is a fresh read, so a deletion, a rename
-  // or another window's change shows on the next one (FILE-C-3).
+  // browse reads one directory of the open volume. Every browse is a fresh
+  // read, so a deletion, a rename or another window's change shows on the next
+  // one (FILE-C-3). It answers whether the listing now holds the volume's
+  // content, so a caller reporting its own result keeps a failed read visible.
   async function browse(relative) {
     if (state.volume === null) {
       return false;
@@ -531,10 +570,15 @@ export function createFileManager({
   // shows the service's own reason instead of a bare status code (FILE-C-3,
   // FILE-C-4).
   async function failureOf(response) {
-    const body = await bodyOf(response);
-    const error = body && typeof body === "object" && body.error && typeof body.error === "object" ? body.error : {};
+    return refusalFrom(response.status, await bodyOf(response));
+  }
+
+  // refusalFrom reads one refusal envelope into the shape the window reports.
+  function refusalFrom(status, answer) {
+    const body = answer && typeof answer === "object" ? answer : {};
+    const error = body.error && typeof body.error === "object" ? body.error : {};
     return {
-      status: response.status,
+      status,
       code: typeof error.code === "string" ? error.code : "",
       message: typeof error.message === "string" ? error.message : "",
       transfer: body && typeof body === "object" && body.transfer && typeof body.transfer === "object" ? body.transfer : null,
@@ -942,6 +986,292 @@ export function createFileManager({
 
   // leaveVolume returns to the volume list and drops the directory, the listing
   // and any preview of the closed volume.
+
+  // openChange starts one change on an entry, or on the directory the window
+  // browses. The pending change is presentation state: nothing is sent until
+  // the reader submits it, except a delete, which first asks what it would
+  // remove (FILE-C-5).
+  function openChange(kind, path, name, isLocation = false) {
+    state.change = { kind, path, name, isLocation };
+    state.confirmation = null;
+    elements.changeReason.textContent = "";
+    if (kind === "rename") {
+      elements.renameName.value = name;
+    } else if (CHANGE_TRANSFERS.has(kind)) {
+      renderTransferVolumes();
+      elements.transferPath.value = name;
+    }
+    renderChange();
+    if (kind === "delete") {
+      void requestDeletion(state.change);
+    }
+  }
+
+  // closeChange drops the pending change and the confirmation it showed.
+  function closeChange() {
+    state.change = null;
+    state.confirmation = null;
+    elements.changeReason.textContent = "";
+    renderChange();
+  }
+
+  // renderChange lays out the pending change: the target it names and the field
+  // it takes. A delete shows its confirmation here, not before the data plane
+  // answered what it would remove (FILE-C-5).
+  function renderChange() {
+    const change = state.change;
+    const isChange = change !== null;
+    elements.changePanel.hidden = !isChange;
+    elements.renameForm.hidden = !isChange || change.kind !== "rename";
+    elements.transferForm.hidden = !isChange || !CHANGE_TRANSFERS.has(change.kind);
+    elements.deleteConfirm.hidden = !isChange || change.kind !== "delete" || state.confirmation === null;
+    if (!isChange) {
+      elements.changeTarget.textContent = "";
+      elements.changeReason.textContent = "";
+      elements.deleteCounts.textContent = "";
+      elements.deleteEntries.replaceChildren();
+      elements.deleteTruncated.hidden = true;
+      elements.deleteTruncated.textContent = "";
+      return;
+    }
+    const label = CHANGE_LABELS[change.kind] || change.kind;
+    elements.changeTarget.textContent = label + "：" + (change.path === "" ? PATH_ROOT_LABEL : change.path);
+    elements.transferSubmit.textContent = change.kind === "move" ? "移动" : "复制";
+    renderDeletion();
+  }
+
+  // renderDeletion states what one delete would remove: the totals the data
+  // plane counted, the entry names it listed, and whether it cut that list
+  // short (FILE-C-5).
+  function renderDeletion() {
+    const confirmation = state.confirmation;
+    elements.deleteEntries.replaceChildren();
+    if (confirmation === null) {
+      elements.deleteCounts.textContent = "";
+      elements.deleteTruncated.hidden = true;
+      elements.deleteTruncated.textContent = "";
+      return;
+    }
+    elements.deleteCounts.textContent =
+      "将删除 " + confirmation.entryCount + " 个条目，含 " + confirmation.subdirectoryCount + " 个子目录";
+    for (const name of confirmation.entries) {
+      const item = doc.createElement("li");
+      item.className = "change-entry";
+      item.textContent = name;
+      elements.deleteEntries.append(item);
+    }
+    elements.deleteTruncated.hidden = !confirmation.truncated;
+    elements.deleteTruncated.textContent = confirmation.truncated
+      ? "条目过多，只列出前 " + confirmation.entries.length + " 项"
+      : "";
+  }
+
+  // renderTransferVolumes offers the volumes the data plane listed for this
+  // account, and nothing else: a copy or move writes into one of them, and
+  // whether it may stays the data plane's judgement (FILE-C-1, FILE-C-5).
+  function renderTransferVolumes() {
+    elements.transferVolume.replaceChildren();
+    for (const entry of state.volumes) {
+      if (typeof entry.namespace !== "string" || entry.namespace === "") {
+        continue;
+      }
+      const option = doc.createElement("option");
+      option.value = entry.namespace + "/" + entry.name;
+      option.textContent = option.value;
+      elements.transferVolume.append(option);
+    }
+    if (state.volume !== null) {
+      elements.transferVolume.value = state.volume.namespace + "/" + state.volume.name;
+    }
+  }
+
+  // selectedVolume is the authorized volume the target field names; a value the
+  // list does not hold names none, so an unknown volume is never sent.
+  function selectedVolume() {
+    const value = String(elements.transferVolume.value || "");
+    for (const entry of state.volumes) {
+      if (entry.namespace + "/" + entry.name === value) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  // requestDeletion asks what one delete would remove. The data plane answers
+  // the totals and names without removing anything; carrying the confirmation
+  // back is what makes the deletion happen (FILE-C-5).
+  async function requestDeletion(change) {
+    setStatus("正在读取" + (change.path === "" ? PATH_ROOT_LABEL : change.path) + "的删除影响范围…");
+    const outcome = await postChange("/delete", { path: change.path, confirm: false });
+    if (state.change !== change) {
+      return;
+    }
+    const confirmation = normalizeConfirmation(outcome.body, change.path);
+    if (confirmation === null) {
+      closeChange();
+      if (outcome.failure === null) {
+        setStatus("删除失败：应答没有影响范围");
+        return;
+      }
+      showFailure(outcome.failure, "删除失败");
+      return;
+    }
+    state.confirmation = confirmation;
+    renderChange();
+    setStatus("删除 " + (change.path === "" ? PATH_ROOT_LABEL : change.path) + " 需要确认");
+  }
+
+  // normalizeConfirmation reads the deletion preview the unconfirmed delete
+  // answered; an answer without one is not a confirmation (FILE-C-5).
+  function normalizeConfirmation(answer, path) {
+    const body = answer && typeof answer === "object" ? answer : {};
+    const confirmation = body.confirmation;
+    if (confirmation === null || typeof confirmation !== "object" || Array.isArray(confirmation)) {
+      return null;
+    }
+    return {
+      path: typeof confirmation.path === "string" && confirmation.path !== "" ? confirmation.path : path,
+      entryCount: typeof confirmation.entryCount === "number" ? confirmation.entryCount : 0,
+      subdirectoryCount: typeof confirmation.subdirectoryCount === "number" ? confirmation.subdirectoryCount : 0,
+      entries: Array.isArray(confirmation.entries) ? confirmation.entries.filter((name) => typeof name === "string") : [],
+      truncated: confirmation.truncated === true,
+    };
+  }
+
+  // submitRename renames the entry inside its own directory; the new name is
+  // the only field a rename takes (FILE-C-5).
+  async function submitRename() {
+    const change = state.change;
+    if (change === null) {
+      return;
+    }
+    const name = String(elements.renameName.value || "").trim();
+    if (name === "") {
+      elements.changeReason.textContent = "新名称不能为空";
+      return;
+    }
+    const outcome = await postChange("/rename", { path: change.path, name });
+    await settleChange(change, outcome, CHANGE_LABELS.rename);
+  }
+
+  // submitTransfer copies or moves one entry into the selected authorized
+  // volume and the path the reader typed (FILE-C-5).
+  async function submitTransfer() {
+    const change = state.change;
+    if (change === null) {
+      return;
+    }
+    const target = selectedVolume();
+    if (target === null) {
+      elements.changeReason.textContent = "请从授权卷中选择目标卷";
+      return;
+    }
+    const path = String(elements.transferPath.value || "").trim();
+    if (path === "") {
+      elements.changeReason.textContent = "目标路径不能为空";
+      return;
+    }
+    const outcome = await postChange("/" + change.kind, {
+      path: change.path,
+      target: { namespace: target.namespace, name: target.name, path },
+    });
+    await settleChange(change, outcome, CHANGE_LABELS[change.kind]);
+  }
+
+  // submitDelete performs the deletion the reader confirmed. Only a request
+  // that carries the confirmation removes anything (FILE-C-5).
+  async function submitDelete() {
+    const change = state.change;
+    if (change === null || state.confirmation === null) {
+      return;
+    }
+    const outcome = await postChange("/delete", { path: change.path, confirm: true });
+    if (outcome.failure !== null) {
+      const refreshed = await browse(state.path);
+      if (refreshed) {
+        showFailure(outcome.failure, "删除失败");
+      }
+      return;
+    }
+    const isLocation = change.isLocation;
+    const path = change.path;
+    closeChange();
+    const refreshed = isLocation ? await browse(parentPath(path)) : await browse(state.path);
+    if (refreshed) {
+      setStatus(describeChange(outcome.body, CHANGE_LABELS.delete));
+    }
+  }
+
+  // postChange sends one change and keeps both answers readable: the outcome
+  // when it ran, or the refusal the data plane gave with its own reason.
+  async function postChange(route, body) {
+    let response;
+    try {
+      response = await read(volumeRoute(state.volume) + route, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+        credentials: "omit",
+        body: JSON.stringify(body),
+      });
+    } catch {
+      return { failure: { status: 0, code: "", message: "变更未完成，请稍后重试" }, body: null };
+    }
+    let answer = null;
+    try {
+      answer = await response.json();
+    } catch {
+      answer = null;
+    }
+    if (response.ok) {
+      return { failure: null, body: answer };
+    }
+    return { failure: refusalFrom(response.status, answer), body: answer };
+  }
+
+  // settleChange reports one change: a success closes the surface once the
+  // listing shows what the volume holds now, a refusal keeps it open with the
+  // data plane's own reason and the refreshed listing (FILE-C-5).
+  async function settleChange(change, outcome, label) {
+    const refreshed = await browse(state.path);
+    if (state.change !== change) {
+      return;
+    }
+    if (outcome.failure === null) {
+      closeChange();
+      if (refreshed) {
+        setStatus(describeChange(outcome.body, label));
+      }
+      return;
+    }
+    if (refreshed) {
+      showFailure(outcome.failure, label + "失败");
+    }
+  }
+
+  // describeChange states what the data plane answered, so the reader sees
+  // where the result landed instead of a bare success (FILE-C-5).
+  function describeChange(answer, label) {
+    const body = answer && typeof answer === "object" ? answer : {};
+    if (body.deleted === true) {
+      return "已删除 " + (typeof body.path === "string" ? body.path : "");
+    }
+    const target = typeof body.targetPath === "string" ? body.targetPath : "";
+    if (target === "") {
+      return label + "完成";
+    }
+    const volume = typeof body.targetVolume === "string" ? body.targetVolume : "";
+    return volume === "" ? label + "完成：" + target : label + "完成：" + volume + ":" + target;
+  }
+
+  // parentPath names the directory that holds one relative path, which is where
+  // the window stays after deleting the directory it browsed.
+  function parentPath(relative) {
+    const cut = relative.lastIndexOf("/");
+    return cut === -1 ? "" : relative.slice(0, cut);
+  }
+
+  // leaveVolume returns to the volume list and drops the directory, the listing,
+  // any preview and any pending change of the closed volume.
   function leaveVolume() {
     state.volume = null;
     state.path = "";
@@ -953,7 +1283,10 @@ export function createFileManager({
     state.preview = null;
     state.transfer = null;
     state.upload = null;
+    state.change = null;
+    state.confirmation = null;
     renderBrowser();
+    renderChange();
     setStatus(`${state.volumes.length} 个授权卷`);
   }
 
@@ -967,6 +1300,7 @@ export function createFileManager({
     elements.root.hidden = !isOpen;
     elements.refresh.hidden = !isOpen;
     elements.upload.hidden = !isOpen;
+    elements.deleteCurrent.hidden = !isOpen;
     renderPath();
     elements.entries.replaceChildren();
     for (const entry of state.entries) {
@@ -1029,6 +1363,22 @@ export function createFileManager({
       download.addEventListener("click", () => void downloadEntry(entry));
       item.append(download);
     }
+
+    // Every entry carries the four changes; the panel they open asks for the
+    // name or the target volume and path (FILE-C-5).
+    const actions = doc.createElement("span");
+    actions.className = "entry-actions";
+    for (const change of Object.keys(CHANGE_LABELS)) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.className = "entry-change";
+      button.textContent = CHANGE_LABELS[change];
+      button.dataset.entry = entry.name;
+      button.dataset.change = change;
+      button.addEventListener("click", () => openChange(change, joinPath(state.path, entry.name), entry.name));
+      actions.append(button);
+    }
+    item.append(actions);
     return item;
   }
 
