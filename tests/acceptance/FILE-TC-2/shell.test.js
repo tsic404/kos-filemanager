@@ -8,12 +8,11 @@ import test from "node:test";
 
 import { createFileManager } from "../../../pkg/product/assets/app.js";
 import {
-  fakeDocument,
-  fakeElement,
   fakeFetch,
   fakeIntervals,
   fakeWindow,
   settle,
+  windowDocument,
 } from "../../shell/harness.js";
 
 const consoleOrigin = "https://console.example.test";
@@ -29,16 +28,7 @@ function init(token) {
 const windowAnswer = { view: "list", initialPath: "", volumes: [] };
 
 function start({ query, answer = windowAnswer } = {}) {
-  const document = fakeDocument({
-    status: fakeElement("p"),
-    path: fakeElement("span"),
-    volumes: fakeElement("ul"),
-    "volumes-empty": fakeElement("p"),
-    count: fakeElement("span"),
-    problems: fakeElement("p"),
-    "view-list": fakeElement("button"),
-    "view-grid": fakeElement("button"),
-  });
+  const document = windowDocument();
   const window = fakeWindow(frameAddress(query));
   const network = fakeFetch({
     "GET /files/window": { status: answer.status || 200, body: answer.body || answer },

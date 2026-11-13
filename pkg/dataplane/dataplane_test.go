@@ -83,18 +83,22 @@ type dataPlane struct {
 // start builds the service over one volume set and one token table.
 func start(t *testing.T, source *volumes, prefs preferences) *dataPlane {
 	t.Helper()
+	return startConfigured(t, dataplane.Config{Volumes: source, Preferences: prefs})
+}
+
+// startConfigured builds the service over one explicit configuration, with the
+// shared token table and clock already in place.
+func startConfigured(t *testing.T, config dataplane.Config) *dataPlane {
+	t.Helper()
 	table := tokens{
 		"alice-token": {
 			AppID: product.AppID, Account: account, WindowID: "window-1",
 			ExpiresAt: clock.Add(10 * time.Minute),
 		},
 	}
-	service, err := dataplane.New(dataplane.Config{
-		Tokens:      table,
-		Volumes:     source,
-		Preferences: prefs,
-		Now:         func() time.Time { return clock },
-	})
+	config.Tokens = table
+	config.Now = func() time.Time { return clock }
+	service, err := dataplane.New(config)
 	if err != nil {
 		t.Fatalf("build the data plane: %v", err)
 	}

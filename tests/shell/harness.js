@@ -14,6 +14,38 @@ export function fakeDocument(ids = {}) {
   };
 }
 
+// windowDocument builds the document the packaged entry renders, so every case
+// drives the ids the shipped document actually carries.
+export function windowDocument() {
+  const ids = [
+    "status",
+    "path",
+    "volumes",
+    "volumes-empty",
+    "count",
+    "problems",
+    "view-list",
+    "view-grid",
+    "browser-panel",
+    "entries",
+    "entries-empty",
+    "entries-count",
+    "truncated",
+    "refresh",
+    "back",
+    "root",
+    "preview-panel",
+    "preview-meta",
+    "preview-text",
+    "preview-image",
+    "preview-cut",
+    "preview-close",
+  ];
+  const elements = {};
+  for (const id of ids) elements[id] = fakeElement(id);
+  return fakeDocument(elements);
+}
+
 // fakeElement is the element API the view builds nodes with. textContent reads
 // the own text and every descendant's, which is what a rendered document shows.
 export function fakeElement(tag) {
@@ -67,6 +99,9 @@ export function fakeElement(tag) {
     getAttribute(name) {
       return element.attributes.has(String(name)) ? element.attributes.get(String(name)) : null;
     },
+    removeAttribute(name) {
+      element.attributes.delete(String(name));
+    },
     addEventListener(name, handler) {
       const handlers = element.listeners.get(name) || [];
       handlers.push(handler);
@@ -87,6 +122,18 @@ export function fakeElement(tag) {
     },
   });
   return element;
+}
+
+// findByClass returns the first element below root carrying one class name, so
+// a case clicks the control the view built instead of knowing its tag order.
+export function findByClass(root, name) {
+  if (!root || !Array.isArray(root.children)) return null;
+  for (const child of root.children) {
+    if (typeof child.className === "string" && child.className.split(/\s+/).includes(name)) return child;
+    const found = findByClass(child, name);
+    if (found) return found;
+  }
+  return null;
 }
 
 // fakeWindow is the frame's window: its location carries the address the host
