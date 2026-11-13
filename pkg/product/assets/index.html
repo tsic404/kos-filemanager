@@ -21,6 +21,8 @@
       <span class="path-label">位置</span>
       <span class="path" id="path">卷根</span>
       <span class="path-actions">
+        <button type="button" class="action" id="upload" hidden>上传</button>
+        <input type="file" id="upload-file" hidden />
         <button type="button" class="action" id="root" hidden>返回卷根</button>
         <button type="button" class="action" id="back" hidden>返回卷列表</button>
       </span>
@@ -49,6 +51,20 @@
           <p class="truncated" id="truncated" hidden></p>
           <ul class="entries list" id="entries"></ul>
           <p class="empty" id="entries-empty" hidden>此目录为空。</p>
+        </section>
+        <section class="panel" id="transfer-panel" aria-labelledby="transfer-heading" hidden>
+          <div class="panel-bar">
+            <h2 id="transfer-heading">传输</h2>
+            <div class="panel-tools">
+              <span class="count" id="transfer-state"></span>
+              <button type="button" class="action" id="transfer-confirm" hidden>确认覆盖</button>
+              <button type="button" class="action" id="transfer-cancel" hidden>取消</button>
+              <button type="button" class="action" id="transfer-dismiss" hidden>关闭</button>
+            </div>
+          </div>
+          <p class="transfer-name" id="transfer-name"></p>
+          <progress class="transfer-progress" id="transfer-progress" max="1" value="0"></progress>
+          <p class="transfer-meta" id="transfer-meta"></p>
         </section>
         <section class="panel" id="preview-panel" aria-labelledby="preview-heading" hidden>
           <div class="panel-bar">

@@ -1,7 +1,8 @@
 // Package dataplane is the file manager's own service (NG10): it lists the
 // volumes a window's account may open, reports the status each volume's
-// projection carries (FILE-C-1, FILE-C-2), and serves browsing and preview
-// inside those volumes (FILE-C-3).
+// projection carries (FILE-C-1, FILE-C-2), serves browsing and preview inside
+// those volumes (FILE-C-3), and carries uploads and downloads at their target
+// names (FILE-C-4).
 //
 // Every request is authorized by the window instance's application token
 // (KOSD-C-75); the console session cookie is never read, so it cannot act as
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tsic404/kosd/api/v1beta1"
@@ -115,6 +117,9 @@ type Service struct {
 	roots       VolumeRoots
 	log         *slog.Logger
 	now         func() time.Time
+	// mu guards the transfer sessions this service hands out.
+	mu        sync.Mutex
+	transfers map[string]*transfer
 }
 
 // New builds the data plane.
@@ -132,6 +137,7 @@ func New(config Config) (*Service, error) {
 		roots:       config.Roots,
 		log:         config.Log,
 		now:         config.Now,
+		transfers:   map[string]*transfer{},
 	}
 	if service.log == nil {
 		service.log = slog.New(slog.DiscardHandler)
@@ -164,6 +170,11 @@ func (s *Service) Handler() http.Handler {
 	mux.Handle("GET /files/volumes/{namespace}/{name}", s.authorize(http.HandlerFunc(s.handleVolume)))
 	mux.Handle("GET /files/volumes/{namespace}/{name}/entries", s.authorize(http.HandlerFunc(s.handleListing)))
 	mux.Handle("GET /files/volumes/{namespace}/{name}/preview", s.authorize(http.HandlerFunc(s.handlePreview)))
+	mux.Handle("POST /files/volumes/{namespace}/{name}/transfers", s.authorize(http.HandlerFunc(s.handleTransferOpen)))
+	mux.Handle("GET /files/volumes/{namespace}/{name}/transfers/{transfer}", s.authorize(http.HandlerFunc(s.handleTransferProgress)))
+	mux.Handle("PUT /files/volumes/{namespace}/{name}/transfers/{transfer}/content", s.authorize(http.HandlerFunc(s.handleTransferContent)))
+	mux.Handle("DELETE /files/volumes/{namespace}/{name}/transfers/{transfer}", s.authorize(http.HandlerFunc(s.handleTransferCancel)))
+	mux.Handle("GET /files/volumes/{namespace}/{name}/download", s.authorize(http.HandlerFunc(s.handleDownload)))
 	return mux
 }
 
