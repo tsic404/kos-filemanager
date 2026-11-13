@@ -25,6 +25,7 @@
         <input type="file" id="upload-file" hidden />
         <button type="button" class="action" id="root" hidden>返回卷根</button>
         <button type="button" class="action" id="back" hidden>返回卷列表</button>
+        <button type="button" class="action" id="delete-current" hidden>删除当前目录</button>
       </span>
     </nav>
     <main class="workspace">
@@ -77,6 +78,34 @@
           <pre class="preview-text" id="preview-text" hidden></pre>
           <img class="preview-image" id="preview-image" alt="" hidden />
           <p class="truncated" id="preview-cut" hidden>预览已截断。</p>
+        </section>
+        <section class="panel" id="change-panel" aria-labelledby="change-heading" hidden>
+          <div class="panel-bar">
+            <h2 id="change-heading">操作</h2>
+            <div class="panel-tools">
+              <span class="count" id="change-target"></span>
+              <button type="button" class="action" id="change-cancel">取消</button>
+            </div>
+          </div>
+          <p class="change-reason" id="change-reason"></p>
+          <div class="change-form" id="rename-form" hidden>
+            <label class="change-label" for="rename-name">新名称</label>
+            <input class="change-field" id="rename-name" type="text" autocomplete="off" />
+            <button type="button" class="action" id="rename-submit">重命名</button>
+          </div>
+          <div class="change-form" id="transfer-form" hidden>
+            <label class="change-label" for="transfer-volume">目标卷</label>
+            <select class="change-field" id="transfer-volume"></select>
+            <label class="change-label" for="transfer-path">目标路径</label>
+            <input class="change-field" id="transfer-path" type="text" autocomplete="off" />
+            <button type="button" class="action" id="transfer-submit">执行</button>
+          </div>
+          <div class="change-confirm" id="delete-confirm" hidden>
+            <p class="change-counts" id="delete-counts"></p>
+            <ul class="change-entries" id="delete-entries"></ul>
+            <p class="truncated" id="delete-truncated" hidden></p>
+            <button type="button" class="action" id="delete-submit">确认删除</button>
+          </div>
         </section>
       </div>
     </main>

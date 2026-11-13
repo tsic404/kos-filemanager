@@ -1,8 +1,9 @@
 // Package dataplane is the file manager's own service (NG10): it lists the
 // volumes a window's account may open, reports the status each volume's
 // projection carries (FILE-C-1, FILE-C-2), serves browsing and preview inside
-// those volumes (FILE-C-3), and carries uploads and downloads at their target
-// names (FILE-C-4).
+// those volumes (FILE-C-3), carries uploads and downloads at their target names
+// (FILE-C-4), and performs the rename, copy, move and delete a window asks for
+// (FILE-C-5).
 //
 // Every request is authorized by the window instance's application token
 // (KOSD-C-75); the console session cookie is never read, so it cannot act as
@@ -175,6 +176,10 @@ func (s *Service) Handler() http.Handler {
 	mux.Handle("PUT /files/volumes/{namespace}/{name}/transfers/{transfer}/content", s.authorize(http.HandlerFunc(s.handleTransferContent)))
 	mux.Handle("DELETE /files/volumes/{namespace}/{name}/transfers/{transfer}", s.authorize(http.HandlerFunc(s.handleTransferCancel)))
 	mux.Handle("GET /files/volumes/{namespace}/{name}/download", s.authorize(http.HandlerFunc(s.handleDownload)))
+	mux.Handle("POST /files/volumes/{namespace}/{name}/rename", s.authorize(http.HandlerFunc(s.handleRename)))
+	mux.Handle("POST /files/volumes/{namespace}/{name}/copy", s.authorize(http.HandlerFunc(s.handleCopy)))
+	mux.Handle("POST /files/volumes/{namespace}/{name}/move", s.authorize(http.HandlerFunc(s.handleMove)))
+	mux.Handle("POST /files/volumes/{namespace}/{name}/delete", s.authorize(http.HandlerFunc(s.handleDelete)))
 	return mux
 }
 

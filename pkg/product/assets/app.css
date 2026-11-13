@@ -299,7 +299,7 @@ body {
 
 .entry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
   align-items: baseline;
   gap: 2px 10px;
   padding: 4px 8px;
@@ -355,8 +355,32 @@ body {
   cursor: pointer;
 }
 
+.entry-actions {
+  display: flex;
+  grid-column: -2 / -1;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.entry-change {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .entry-download:hover {
   border-color: var(--accent);
+}
+
+.entry-change:hover,
+.entry-change:focus-visible {
+  border-color: var(--accent);
+  color: var(--ink);
 }
 
 .entries.list .entry-size {
@@ -405,6 +429,72 @@ body {
   margin: auto;
   padding: 12px;
   object-fit: contain;
+}
+
+#change-panel {
+  flex: 0 0 auto;
+}
+
+.change-reason {
+  margin: 8px 14px 0;
+  color: var(--blocked);
+  font-size: 12px;
+}
+
+.change-reason:empty {
+  display: none;
+}
+
+.change-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.change-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.change-field {
+  min-width: 0;
+  flex: 1 1 140px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.change-confirm {
+  padding: 10px 14px;
+}
+
+.change-counts {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.change-entries {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow: auto;
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", monospace;
+  font-size: 12px;
+}
+
+.change-entry {
+  overflow-wrap: anywhere;
+}
+
+.change-confirm .truncated {
+  padding: 0;
+  border-bottom: 0;
 }
 
 @media (max-width: 900px) {

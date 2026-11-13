@@ -6,6 +6,7 @@ require (
 	github.com/tsic404/kos-dashboard v0.0.0-20261113023134-0e2b52d7dd21
 	github.com/tsic404/kos-sdk v0.0.0-20261113012442-448f542ddd93
 	github.com/tsic404/kosd v0.0.0-20261113012500-50e5cf2d7313
+	golang.org/x/sys v0.49.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 )
@@ -54,7 +55,6 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

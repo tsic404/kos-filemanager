@@ -404,6 +404,22 @@ func (c *Case) DataPlane(t *testing.T, method, path string, headers map[string]s
 	return status, body
 }
 
+// DataPlaneJSON calls the product's data plane with one JSON body, so a case can
+// exercise a change operation rather than a read (FILE-C-5).
+func (c *Case) DataPlaneJSON(t *testing.T, method, path string, payload any, headers map[string]string) (int, map[string]any) {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode the body of %s %s: %v", method, path, err)
+	}
+	carried := make(map[string]string, len(headers)+1)
+	for name, value := range headers {
+		carried[name] = value
+	}
+	carried["Content-Type"] = "application/json"
+	return c.DataPlaneSend(t, method, path, carried, string(encoded))
+}
+
 // DataPlaneResponse calls the product's data plane and reports the answer's
 // headers beside its decoded body, so a case can assert what a refusal must not
 // carry, such as a download disposition.
