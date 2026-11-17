@@ -1,0 +1,143 @@
+# The file manager's data plane as its own process (KOSD-NG-10).
+#
+# The service reads volumes from the cluster with its own credentials and
+# verifies window application tokens against the digest table the window host
+# publishes. The console BFF holds neither the credentials nor a copy of the
+# table (KOSD-C-12).
+#
+# Both authorization inputs are required: the process refuses to start without
+# KOS_FILEMANAGER_VOLUME_ROOT and KOS_FILEMANAGER_TOKEN_TABLE.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kos-filemanager-dataplane
+  namespace: kos-system
+  labels:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+    app.kubernetes.io/part-of: kos-filemanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kos-filemanager-dataplane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kos-filemanager-dataplane
+        app.kubernetes.io/part-of: kos-filemanager
+    spec:
+      serviceAccountName: kos-filemanager-dataplane
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: dataplane
+          image: kos-filemanager-dataplane:1.0.0
+          args: []
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KOS_FILEMANAGER_ADDR
+              value: ":8080"
+            - name: KOS_FILEMANAGER_VOLUME_ROOT
+              value: /volumes
+            - name: KOS_FILEMANAGER_TOKEN_TABLE
+              value: /run/kos/app-tokens/tokens.json
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: volumes
+              mountPath: /volumes
+              readOnly: false
+            - name: app-tokens
+              mountPath: /run/kos/app-tokens
+              readOnly: true
+      volumes:
+        # One host directory per volume, named <namespace>/<name>; the data
+        # plane confines every read and write to the volume's own directory.
+        - name: volumes
+          hostPath:
+            path: /var/lib/kos/volumes
+            type: Directory
+        # The window host publishes this table; it carries digests only, never
+        # a usable token value (KOSD-C-14).
+        - name: app-tokens
+          hostPath:
+            path: /var/lib/kos/app-tokens
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kos-filemanager-dataplane
+  namespace: kos-system
+  labels:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+    app.kubernetes.io/part-of: kos-filemanager
+spec:
+  selector:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kos-filemanager-dataplane
+  namespace: kos-system
+  labels:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+    app.kubernetes.io/part-of: kos-filemanager
+---
+# The service reads volumes and nothing else: it owns no volume and never
+# writes the class (FILE-C-1).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kos-filemanager-dataplane
+  labels:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+    app.kubernetes.io/part-of: kos-filemanager
+rules:
+  - apiGroups: ["kos.tsic.top"]
+    resources: ["volumes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kos-filemanager-dataplane
+  labels:
+    app.kubernetes.io/name: kos-filemanager-dataplane
+    app.kubernetes.io/part-of: kos-filemanager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kos-filemanager-dataplane
+subjects:
+  - kind: ServiceAccount
+    name: kos-filemanager-dataplane
+    namespace: kos-system

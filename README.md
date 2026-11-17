@@ -18,8 +18,10 @@ KOS 系统应用项目：扩展包 — 授权卷内的文件浏览与传输。
 |---|---|---|
 | `pkg/product/` | 产品标识、`App` 清单、扩展声明、UI 资产与经 SDK 的打包 | `FILE-C-1`，引用 `KOSD-C-17`、`KOSD-C-18`、`KOSD-C-73`、`SDK-C-3`、`SDK-C-4` |
 | `pkg/product/assets/` | 窗口入口文档、视图模块、样式与图标；随包分发 | `FILE-C-5`、`KOSD-C-73`、`KOSD-C-75`、`DASH-C-27` |
-| `pkg/dataplane/` | 自有数据面：应用令牌鉴权、授权卷列表与卷状态、偏好读取、浏览与预览、上传会话与下载、变更操作 | `FILE-C-1`–`FILE-C-5`，引用 `KOSD-C-13`、`KOSD-C-38`、`KOSD-C-60`、`KOSD-C-75` |
+| `pkg/dataplane/` | 自有数据面：应用令牌鉴权、授权卷列表与卷状态、偏好读取、浏览与预览、上传会话与下载、变更操作；独立部署的装配与摘要令牌表 | `FILE-C-1`–`FILE-C-5`，引用 `KOSD-C-13`、`KOSD-C-38`、`KOSD-C-60`、`KOSD-C-75` |
 | `cmd/kos-filemanager-pack/` | 构建带摘要的安装包 | `KOSD-C-17`、`SDK-C-4` |
+| `cmd/kos-filemanager-dataplane/` | 独立数据面进程：按环境注入装配，缺项拒绝启动 | `KOSD-NG-10`，引用 `KOSD-C-12` |
+| `config/dataplane/` | 独立数据面的部署清单：Deployment、Service、ServiceAccount 与只读卷的最小权限 | `KOSD-NG-10`、`FILE-C-1` |
 | `tests/acceptance/<TC-id>/` | 验收用例，目录名取设计编号；`shell.test.js` 是用例的窗口侧部分 | `03-acceptance.md` 的对应条目 |
 
 ### 窗口
@@ -97,7 +99,17 @@ KOS 系统应用项目：扩展包 — 授权卷内的文件浏览与传输。
 
 `tests/acceptance/KOSD-TC-155/` 用这条真实路径取证：以 SDK 打出的包发起安装、读取投影与窗口宿主、卸载后再读，并用摘要不符的请求验证拒绝面；资产面用 `kos-dashboard` 的资产服务与签名地址逐个取回入口文档和三个相对子资源。
 
-数据面的目标部署形态是独立服务：它有自己的集群凭据；控制台 BFF 不持有集群凭据（`KOSD-C-12`），因此不能把数据面挂在 BFF 进程里。`dataplane.AppHost` 只是同进程可验的生命周期适配，独立部署还缺应用令牌的跨进程校验通道（控制面身份接受应用令牌，或窗口宿主提供 introspection）；两条都需要跨项目契约。
+数据面的部署形态是独立服务：它有自己的集群凭据；控制台 BFF 不持有集群凭据（`KOSD-C-12`），因此不能把数据面挂在 BFF 进程里。`dataplane.AppHost` 只是同进程用例的适配；独立部署用 `dataplane.TokenTable` 校验令牌：窗口宿主把每个活动令牌的**摘要**连同应用、账号、窗口实例与到期发布成一份表，数据面每次请求重读该表，因此关窗、退出与卸载在下一次请求即生效（`KOSD-C-75`）。
+
+独立进程 `cmd/kos-filemanager-dataplane` 按环境装配，三项都必须注入：
+
+| 变量 | 含义 |
+|---|---|
+| `KOS_FILEMANAGER_VOLUME_ROOT` | 卷挂载的根目录，服务只在该目录下按 `<namespace>/<name>` 提供文件 |
+| `KOS_FILEMANAGER_TOKEN_TABLE` | 窗口宿主发布的摘要令牌表 |
+| `KOS_FILEMANAGER_KUBECONFIG` | 集群凭据文件；留空表示使用 Pod 内的服务账号 |
+
+另可给 `KOS_FILEMANAGER_ADDR`（默认 `:8080`）。前两项缺失、路径不可读、以及既无 kubeconfig 又无服务账号时，进程打印原因并以非零码退出，不会以半套授权输入开始服务。`config/dataplane/deployment.yaml` 给出对应清单：单副本 Deployment、Service、ServiceAccount，以及只允许 `get`/`list` 卷的 ClusterRole——数据面不写卷，也不持有其他权限。
 
 ## 构建与测试
 
